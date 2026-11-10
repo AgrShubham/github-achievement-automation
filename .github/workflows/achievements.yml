@@ -1,0 +1,125 @@
+# Optional GitHub Actions template for scaling Pull Shark (e.g., Silver=128 / Gold=1024)
+# in safe, rate-limit-friendly batches inside your sandbox repository.
+#
+# IMPORTANT:
+#   To count toward YOUR profile's Pull Shark badge, PRs must be authored by YOUR account,
+#   NOT by `github-actions[bot]`. Store a Personal Access Token (with `repo` scope) as a
+#   repository secret named `ACHIEVEMENTS_PAT` before enabling this workflow.
+
+name: Achievement Batch Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      batch_size:
+        description: "Number of PRs to create and merge in this batch"
+        required: true
+        default: "25"
+        type: string
+      delay_seconds:
+        description: "Delay between PR cycles (seconds)"
+        required: true
+        default: "4"
+        type: string
+      target_tier:
+        description: "Pull Shark target tier (default, bronze, silver, gold)"
+        required: true
+        default: "silver"
+        type: choice
+        options:
+          - default
+          - bronze
+          - silver
+          - gold
+
+jobs:
+  run-batch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ACHIEVEMENTS_PAT }}
+          fetch-depth: 0
+
+      - name: Validate PAT secret
+        env:
+          PAT_PRESENT: ${{ secrets.ACHIEVEMENTS_PAT != '' }}
+        run: |
+          if [ "$PAT_PRESENT" != "true" ]; then
+            echo "::error::Secret ACHIEVEMENTS_PAT is not configured. Using GITHUB_TOKEN would author PRs as github-actions[bot] and will not count toward your profile achievements."
+            exit 1
+          fi
+
+      - name: Configure Git author from authenticated user
+        env:
+          GH_TOKEN: ${{ secrets.ACHIEVEMENTS_PAT }}
+        run: |
+          LOGIN=$(gh api user --jq '.login')
+          UID_NUM=$(gh api user --jq '.id')
+          NAME=$(gh api user --jq '.name // .login')
+          EMAIL=$(gh api user --jq '.email // empty')
+          if [ -z "$EMAIL" ]; then
+            EMAIL="${UID_NUM}+${LOGIN}@users.noreply.github.com"
+          fi
+          git config user.name "$NAME"
+          git config user.email "$EMAIL"
+
+      - name: Run paced PR batch
+        env:
+          GH_TOKEN: ${{ secrets.ACHIEVEMENTS_PAT }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, time, datetime as dt
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          owner, short_repo = repo.split("/", 1)
+          tiers = {"default": 2, "bronze": 16, "silver": 128, "gold": 1024}
+          target = tiers["${{ inputs.target_tier }}"]
+          batch_size = int("${{ inputs.batch_size }}")
+          delay = float("${{ inputs.delay_seconds }}")
+
+          login = subprocess.check_output(["gh", "api", "user", "--jq", ".login"], text=True).strip()
+          default_branch = subprocess.check_output(
+              ["gh", "repo", "view", repo, "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
+              text=True,
+          ).strip() or "main"
+
+          merged_raw = subprocess.check_output(
+              ["gh", "pr", "list", "--repo", repo, "--state", "merged", "--author", login, "--limit", "1000", "--json", "number"],
+              text=True,
+          )
+          existing = len(json.loads(merged_raw or "[]"))
+          remaining = max(0, target - existing)
+          to_run = min(remaining, batch_size)
+          print(f"Existing merged={existing}, target={target}, running batch={to_run}")
+
+          for i in range(1, to_run + 1):
+              seq = existing + i
+              ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+              branch = f"achievement/pr-{seq:04d}-{ts.lower()}"
+              subprocess.run(["git", "checkout", default_branch], check=True)
+              subprocess.run(["git", "pull", "--ff-only", "origin", default_branch], check=True)
+              subprocess.run(["git", "checkout", "-B", branch], check=True)
+              with open("ACHIEVEMENTS_LOG.md", "a", encoding="utf-8") as fh:
+                  fh.write(f"- [{ts}] Milestone #{seq:04d} (`{branch}`)\n")
+              subprocess.run(["git", "add", "ACHIEVEMENTS_LOG.md"], check=True)
+              subprocess.run(["git", "commit", "-m", f"chore(achievements): milestone #{seq:04d}"], check=True)
+              subprocess.run(["git", "push", "-u", "origin", branch], check=True)
+              pr_url = subprocess.check_output(
+                  [
+                      "gh", "pr", "create", "--repo", repo,
+                      "--base", default_branch, "--head", branch,
+                      "--title", f"chore(achievements): milestone #{seq:04d}",
+                      "--body", "Automated Pull Shark batch milestone.",
+                  ],
+                  text=True,
+              ).strip().splitlines()[-1]
+              time.sleep(1.0)
+              subprocess.run(["gh", "pr", "merge", pr_url, "--repo", repo, "--merge", "--delete-branch"], check=True)
+              subprocess.run(["git", "checkout", default_branch], check=True)
+              subprocess.run(["git", "pull", "--ff-only", "origin", default_branch], check=True)
+              if i < to_run:
+                  time.sleep(delay)
+          PY
+

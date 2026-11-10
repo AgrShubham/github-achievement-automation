@@ -1,0 +1,18 @@
+# Local sandbox repository clones and state files
+.sandbox/
+.achievements-state.json
+*.log
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+
+# Environment / secrets (never commit tokens)
+.env
+.env.*
+!.env.example
+

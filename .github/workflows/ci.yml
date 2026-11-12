@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test Suite (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv and Python 3.13
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.13"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: uv sync --frozen --extra dev
+
+      - name: Run pytest suite
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: uv run pytest -v
+
+      - name: Run legacy CLI unittest suite
+        shell: pwsh
+        run: uv run python -m unittest test_execute_achievements.py -v
+
+  package-smoke:
+    name: Build Portable Windows EXE
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv and Python 3.13
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.13"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: uv sync --frozen --extra dev
+
+      - name: Embed default OAuth Client ID if configured
+        if: ${{ vars.GH_OAUTH_CLIENT_ID != '' }}
+        shell: pwsh
+        env:
+          BUILD_OAUTH_CLIENT_ID: ${{ vars.GH_OAUTH_CLIENT_ID }}
+        run: |
+          uv run python -c "import os, pathlib, re; p = pathlib.Path('src/gh_achievement_studio/core/auth.py'); cid = os.environ['BUILD_OAUTH_CLIENT_ID'].strip(); txt = p.read_text(encoding='utf-8'); updated, n = re.subn(r'^DEFAULT_OAUTH_CLIENT_ID\s*=.*$', f'DEFAULT_OAUTH_CLIENT_ID = {cid!r}', txt, count=1, flags=re.M); assert n == 1; p.write_text(updated, encoding='utf-8')"
+
+      - name: Build GitHubAchievementStudio.exe
+        shell: pwsh
+        run: uv run pyinstaller --clean --noconfirm packaging\app.spec
+
+      - name: Verify clean-PATH executable launch
+        shell: pwsh
+        run: |
+          $origPath = $env:PATH
+          $origLocal = $env:LOCALAPPDATA
+          $tmpLocal = Join-Path $env:RUNNER_TEMP "gh_studio_ci_$(Get-Random)"
+          New-Item -ItemType Directory -Force -Path $tmpLocal | Out-Null
+          try {
+              $env:PATH = "C:\Windows\System32;C:\Windows"
+              $env:LOCALAPPDATA = $tmpLocal
+              $env:QT_QPA_PLATFORM = "offscreen"
+              $p = Start-Process -FilePath (Resolve-Path .\dist\GitHubAchievementStudio.exe) -PassThru
+              Start-Sleep -Seconds 4
+              if ($p.HasExited) {
+                  throw "Frozen GUI exited prematurely with code $($p.ExitCode)"
+              }
+              Stop-Process -Id $p.Id -Force
+              if (Test-Path (Join-Path $tmpLocal "GitHubAchievementStudio\crash.log")) {
+                  throw "crash.log was created during frozen GUI startup"
+              }
+          } finally {
+              $env:PATH = $origPath
+              $env:LOCALAPPDATA = $origLocal
+              Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
+              Remove-Item -Recurse -Force $tmpLocal -ErrorAction SilentlyContinue
+          }
+
+      - name: Generate SHA256SUMS.txt
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash .\dist\GitHubAchievementStudio.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -Path .\dist\SHA256SUMS.txt -Value "$hash  GitHubAchievementStudio.exe" -Encoding ascii
+          Get-Content .\dist\SHA256SUMS.txt
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubAchievementStudio-windows-x64
+          path: |
+            dist/GitHubAchievementStudio.exe
+            dist/SHA256SUMS.txt
+          retention-days: 14
+

@@ -208,4 +208,20 @@ def test_plan_confirm_dialog_and_runner_form(qapp: QApplication, tmp_path: Path)
     assert "***REDACTED***" in written
     assert json.loads(written)["primary_login"] == "alice"
 
+    # Device Flow challenge reveals Copy Code button and updates clipboard
+    from gh_achievement_studio.core.auth import DeviceCodeChallenge
+
+    with mock.patch("gh_achievement_studio.ui.views.login_view.QDesktopServices.openUrl"):
+        win.login_view.primary_card._on_device_challenge(
+            DeviceCodeChallenge(
+                device_code="dev123",
+                user_code="WXYZ-5678",
+                verification_uri="https://github.com/login/device",
+                expires_in=900,
+                interval=5,
+            )
+        )
+    assert not win.login_view.primary_card.device_copy_btn.isHidden()
+    assert "WXYZ-5678" in win.login_view.primary_card.device_status_lbl.text()
+
     win.close()

@@ -93,6 +93,11 @@ def test_credential_store_encrypts_token_and_reads_client_id(tmp_path: Path) -> 
     store.save_oauth_client_id("Ov23liTestClientId")
     assert store.load_oauth_client_id() == "Ov23liTestClientId"
 
+    with mock.patch("gh_achievement_studio.core.auth.DEFAULT_OAUTH_CLIENT_ID", "Ov23liDefaultFallback"):
+        fresh_store = CredentialStore(tmp_path / "fresh_creds.json")
+        assert fresh_store.load_oauth_client_id() == "Ov23liDefaultFallback"
+        assert store.load_oauth_client_id() == "Ov23liTestClientId"
+
     with mock.patch.dict("os.environ", {"GH_OAUTH_CLIENT_ID": "EnvClientOverride"}):
         assert store.load_oauth_client_id() == "EnvClientOverride"
 

@@ -1,0 +1,160 @@
+name: Release Windows Binary
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create or update (e.g., v1.0.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build-and-release:
+    name: Build, Sign & Publish Release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv and Python 3.13
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.13"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: uv sync --frozen --extra dev
+
+      - name: Run full test suite
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          uv run pytest -v
+          uv run python -m unittest test_execute_achievements.py -v
+
+      - name: Embed default OAuth Client ID if configured
+        if: ${{ vars.GH_OAUTH_CLIENT_ID != '' }}
+        shell: pwsh
+        env:
+          BUILD_OAUTH_CLIENT_ID: ${{ vars.GH_OAUTH_CLIENT_ID }}
+        run: |
+          uv run python -c "import os, pathlib, re; p = pathlib.Path('src/gh_achievement_studio/core/auth.py'); cid = os.environ['BUILD_OAUTH_CLIENT_ID'].strip(); txt = p.read_text(encoding='utf-8'); updated, n = re.subn(r'^DEFAULT_OAUTH_CLIENT_ID\s*=.*$', f'DEFAULT_OAUTH_CLIENT_ID = {cid!r}', txt, count=1, flags=re.M); assert n == 1; p.write_text(updated, encoding='utf-8')"
+
+      - name: Build GitHubAchievementStudio.exe
+        shell: pwsh
+        run: uv run pyinstaller --clean --noconfirm packaging\app.spec
+
+      - name: Authenticode sign executable (optional PFX secrets)
+        if: ${{ secrets.WINDOWS_PFX_BASE64 != '' && secrets.WINDOWS_PFX_PASSWORD != '' }}
+        shell: pwsh
+        env:
+          PFX_B64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          PFX_PASS: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          try {
+              [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:PFX_B64))
+              $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse |
+                  Where-Object { $_.FullName -match '\\x64\\' } |
+                  Sort-Object FullName -Descending |
+                  Select-Object -First 1 -ExpandProperty FullName
+              if (-not $signtool) {
+                  throw "signtool.exe not found on runner"
+              }
+              & $signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f $pfxPath /p $env:PFX_PASS .\dist\GitHubAchievementStudio.exe
+              if ($LASTEXITCODE -ne 0) {
+                  throw "signtool failed with exit code $LASTEXITCODE"
+              }
+              & $signtool verify /pa .\dist\GitHubAchievementStudio.exe
+              if ($LASTEXITCODE -ne 0) {
+                  throw "signtool verify failed with exit code $LASTEXITCODE"
+              }
+          } finally {
+              Remove-Item $pfxPath -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Generate SHA256SUMS.txt
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash .\dist\GitHubAchievementStudio.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -Path .\dist\SHA256SUMS.txt -Value "$hash  GitHubAchievementStudio.exe" -Encoding ascii
+          Get-Content .\dist\SHA256SUMS.txt
+
+      - name: Clean-PATH executable smoke test
+        shell: pwsh
+        run: |
+          $origPath = $env:PATH
+          $origLocal = $env:LOCALAPPDATA
+          $tmpLocal = Join-Path $env:RUNNER_TEMP "gh_studio_rel_$(Get-Random)"
+          New-Item -ItemType Directory -Force -Path $tmpLocal | Out-Null
+          try {
+              $env:PATH = "C:\Windows\System32;C:\Windows"
+              $env:LOCALAPPDATA = $tmpLocal
+              $env:QT_QPA_PLATFORM = "offscreen"
+              $p = Start-Process -FilePath (Resolve-Path .\dist\GitHubAchievementStudio.exe) -PassThru
+              Start-Sleep -Seconds 4
+              if ($p.HasExited) {
+                  throw "Frozen GUI exited prematurely with code $($p.ExitCode)"
+              }
+              Stop-Process -Id $p.Id -Force
+              if (Test-Path (Join-Path $tmpLocal "GitHubAchievementStudio\crash.log")) {
+                  throw "crash.log was created during frozen GUI startup"
+              }
+          } finally {
+              $env:PATH = $origPath
+              $env:LOCALAPPDATA = $origLocal
+              Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
+              Remove-Item -Recurse -Force $tmpLocal -ErrorAction SilentlyContinue
+          }
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/GitHubAchievementStudio.exe
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_INPUT: ${{ inputs.tag }}
+          IS_SIGNED: ${{ secrets.WINDOWS_PFX_BASE64 != '' && secrets.WINDOWS_PFX_PASSWORD != '' }}
+        run: |
+          $tag = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}" } else { $env:TAG_INPUT.Trim() }
+          if (-not $tag) { throw "Release tag is required" }
+          $sha = (Get-Content .\dist\SHA256SUMS.txt).Split()[0]
+          $signNote = if ($env:IS_SIGNED -eq "true") {
+              "Binary is Authenticode-signed with SHA-256 timestamping."
+          } else {
+              "Binary is currently unsigned; verify the SHA-256 digest and build provenance attestation before launching."
+          }
+          $notes = @"
+## GitHub Achievement Studio $tag
+
+Portable Windows 10/11 desktop executable and gitless CLI runner (no local ``git``, ``gh``, or Python required).
+
+### Checksum Verification (PowerShell)
+``````powershell
+Get-FileHash .\GitHubAchievementStudio.exe -Algorithm SHA256
+``````
+Expected SHA-256: ``$sha``
+
+> $signNote
+"@
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+              gh release upload $tag .\dist\GitHubAchievementStudio.exe .\dist\SHA256SUMS.txt --clobber
+              gh release edit $tag --notes $notes
+          } else {
+              gh release create $tag .\dist\GitHubAchievementStudio.exe .\dist\SHA256SUMS.txt --title "GitHub Achievement Studio $tag" --notes $notes --generate-notes
+          }
+

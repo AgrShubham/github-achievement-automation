@@ -40,10 +40,13 @@ Get-FileHash .\dist\GitHubAchievementStudio.exe -Algorithm SHA256
 ```
 (Checksums are written to `dist/SHA256SUMS.txt` alongside release artifacts.)
 
-### Windows SmartScreen & Code Signing Notice
-Because `GitHubAchievementStudio.exe` is currently an **unsigned** portable binary, Windows 11 Microsoft Defender SmartScreen may show *"Windows protected your PC"* on downloaded copies until the binary builds reputation or is Authenticode-signed:
-- Always verify the SHA-256 digest against `SHA256SUMS.txt` before running.
-- For public distribution without SmartScreen warnings, sign `dist/GitHubAchievementStudio.exe` using an EV/OV Authenticode certificate (e.g., Azure Trusted Signing or Certum) via `signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 dist\GitHubAchievementStudio.exe`.
+### Windows SmartScreen, OAuth Device Flow & Automated Releases
+- **1-Click OAuth Device Flow:** Click **Register Free OAuth App** in the **Accounts** tab (check **Enable Device Flow** in GitHub Developer Settings) to paste your public OAuth App Client ID, or set the repository variable `GH_OAUTH_CLIENT_ID` in GitHub Actions so CI release builds embed it as `DEFAULT_OAUTH_CLIENT_ID` automatically.
+- **Automated CI & Release Builds:** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs `pytest` + `unittest` and validates clean-`PATH` PyInstaller builds on every push/PR; [`.github/workflows/release.yml`](.github/workflows/release.yml) builds, attests build provenance (`actions/attest-build-provenance`), generates `SHA256SUMS.txt`, and publishes GitHub Releases on `v*` tags.
+- **SmartScreen & Code Signing:** Because release binaries without a commercial/OSS Authenticode certificate are unsigned, Windows Defender SmartScreen may show *"Windows protected your PC"* until signed or reputation builds. Configure repository secrets `WINDOWS_PFX_BASE64` and `WINDOWS_PFX_PASSWORD` (or wire Azure Trusted Signing / SignPath) so `release.yml` signs `GitHubAchievementStudio.exe` automatically before hashing and publishing:
+  ```powershell
+  signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 dist\GitHubAchievementStudio.exe
+  ```
 
 ---
 

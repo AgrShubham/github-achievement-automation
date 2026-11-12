@@ -19,7 +19,12 @@ from PySide6.QtWidgets import (
 )
 
 from ..workers import DeviceFlowWorker, TokenAuthWorker
-from ...core.auth import AuthError, CredentialStore, DeviceCodeChallenge
+from ...core.auth import (
+    DEFAULT_OAUTH_CLIENT_ID,
+    AuthError,
+    CredentialStore,
+    DeviceCodeChallenge,
+)
 from ...core.models import AccountSession
 
 
@@ -41,6 +46,7 @@ class AccountAuthCard(QGroupBox):
         self._session: AccountSession | None = None
         self._worker: TokenAuthWorker | None = None
         self._device_worker: DeviceFlowWorker | None = None
+        self._active_user_code: str = ""
 
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
@@ -89,6 +95,13 @@ class AccountAuthCard(QGroupBox):
         self.create_pat_btn.clicked.connect(self._open_pat_page)
         quick_row.addWidget(self.create_pat_btn)
 
+        self.register_oauth_btn = QPushButton("Register Free OAuth App")
+        self.register_oauth_btn.setToolTip(
+            "Opens GitHub Developer Settings pre-filled to create a free OAuth App Client ID with Device Flow."
+        )
+        self.register_oauth_btn.clicked.connect(self._open_oauth_app_page)
+        quick_row.addWidget(self.register_oauth_btn)
+
         self.gh_import_btn = QPushButton("Import from GitHub CLI (gh)", self.login_panel)
         self.gh_import_btn.clicked.connect(self._import_gh_cli)
         if allow_gh_import and shutil.which("gh"):
@@ -101,7 +114,7 @@ class AccountAuthCard(QGroupBox):
         # Row 2: OAuth Device Flow
         oauth_row = QHBoxLayout()
         self.client_id_input = QLineEdit()
-        self.client_id_input.setPlaceholderText("OAuth App Client ID (optional, enables 1-click Device Flow)")
+        self.client_id_input.setPlaceholderText("OAuth App Client ID (enable Device Flow in GitHub Developer Settings)")
         self.client_id_input.setText(self.cred_store.load_oauth_client_id())
         oauth_row.addWidget(self.client_id_input, 1)
 
@@ -109,11 +122,26 @@ class AccountAuthCard(QGroupBox):
         self.device_btn.clicked.connect(self._start_device_flow)
         oauth_row.addWidget(self.device_btn)
 
+        self.device_copy_btn = QPushButton("Copy Code")
+        self.device_copy_btn.clicked.connect(self._copy_device_code)
+        self.device_copy_btn.hide()
+        oauth_row.addWidget(self.device_copy_btn)
+
         self.device_cancel_btn = QPushButton("Cancel")
         self.device_cancel_btn.clicked.connect(self._cancel_device_flow)
         self.device_cancel_btn.hide()
         oauth_row.addWidget(self.device_cancel_btn)
         login_layout.addLayout(oauth_row)
+
+        self.toggle_oauth_id_btn = QPushButton("Configure Custom OAuth Client ID")
+        self.toggle_oauth_id_btn.setCheckable(True)
+        self.toggle_oauth_id_btn.toggled.connect(self.client_id_input.setVisible)
+        if DEFAULT_OAUTH_CLIENT_ID.strip():
+            self.client_id_input.hide()
+            self.register_oauth_btn.hide()
+            quick_row.insertWidget(1, self.toggle_oauth_id_btn)
+        else:
+            self.toggle_oauth_id_btn.hide()
 
         self.device_status_lbl = QLabel("")
         self.device_status_lbl.setWordWrap(True)
@@ -155,6 +183,7 @@ class AccountAuthCard(QGroupBox):
         self.gh_import_btn.setDisabled(busy)
         self.device_btn.setDisabled(busy)
         self.pat_input.setDisabled(busy)
+        self.client_id_input.setDisabled(busy)
 
     def _show_error(self, message: str) -> None:
         self.error_lbl.setText(message)
@@ -165,6 +194,15 @@ class AccountAuthCard(QGroupBox):
             "https://github.com/settings/tokens/new"
             "?scopes=repo,read:user,user:email,write:discussion"
             "&description=GitHub%20Achievement%20Studio"
+        )
+        QDesktopServices.openUrl(QUrl(url))
+
+    def _open_oauth_app_page(self) -> None:
+        url = (
+            "https://github.com/settings/applications/new"
+            "?oauth_application[name]=GitHub%20Achievement%20Studio"
+            "&oauth_application[url]=https://github.com/AgrShubham/github-achievement-automation"
+            "&oauth_application[callback_url]=http://127.0.0.1/callback"
         )
         QDesktopServices.openUrl(QUrl(url))
 
@@ -189,18 +227,21 @@ class AccountAuthCard(QGroupBox):
         self._worker.start()
 
     def _start_device_flow(self) -> None:
-        client_id = self.client_id_input.text().strip()
+        client_id = self.client_id_input.text().strip() or self.cred_store.load_oauth_client_id()
         if not client_id:
             QMessageBox.information(
                 self,
                 "GitHub OAuth Client ID Needed",
-                "Enter an OAuth App Client ID (with Device Flow enabled in GitHub Developer Settings), "
+                "Click 'Register Free OAuth App' (check 'Enable Device Flow' and paste the Client ID), "
                 "or use 'Create Token on GitHub' / 'Import from GitHub CLI' above.",
             )
             return
-        self.cred_store.save_oauth_client_id(client_id)
+        if client_id != DEFAULT_OAUTH_CLIENT_ID.strip():
+            self.cred_store.save_oauth_client_id(client_id)
         self.error_lbl.hide()
+        self._active_user_code = ""
         self._set_busy(True)
+        self.device_copy_btn.hide()
         self.device_cancel_btn.show()
         self.device_status_lbl.setText("Requesting verification code from GitHub...")
         self.device_status_lbl.show()
@@ -215,10 +256,17 @@ class AccountAuthCard(QGroupBox):
         if self._device_worker is not None:
             self._device_worker.cancel()
 
-    def _on_device_challenge(self, challenge: DeviceCodeChallenge) -> None:
+    def _copy_device_code(self) -> None:
+        if not self._active_user_code:
+            return
         clipboard = QGuiApplication.clipboard()
         if clipboard is not None:
-            clipboard.setText(challenge.user_code)
+            clipboard.setText(self._active_user_code)
+
+    def _on_device_challenge(self, challenge: DeviceCodeChallenge) -> None:
+        self._active_user_code = challenge.user_code
+        self._copy_device_code()
+        self.device_copy_btn.show()
         self.device_status_lbl.setText(
             f"Code copied to clipboard: {challenge.user_code}\n"
             f"Approve access at {challenge.verification_uri} — waiting for GitHub confirmation..."
@@ -226,13 +274,17 @@ class AccountAuthCard(QGroupBox):
         QDesktopServices.openUrl(QUrl(challenge.verification_uri))
 
     def _on_device_ok(self, session: AccountSession) -> None:
+        self._active_user_code = ""
         self._set_busy(False)
+        self.device_copy_btn.hide()
         self.device_cancel_btn.hide()
         self.device_status_lbl.hide()
         self.set_session(session, persist=True)
 
     def _on_device_fail(self, message: str) -> None:
+        self._active_user_code = ""
         self._set_busy(False)
+        self.device_copy_btn.hide()
         self.device_cancel_btn.hide()
         self.device_status_lbl.hide()
         self._show_error(message)

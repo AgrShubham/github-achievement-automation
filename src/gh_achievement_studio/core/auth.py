@@ -19,6 +19,10 @@ from .models import AccountSession
 from .security import SecurityError, protect_secret, unprotect_secret
 from .state import default_app_dir
 
+# Optional public GitHub OAuth App Client ID (Device Flow enabled, no secret needed).
+# Override at runtime via GH_OAUTH_CLIENT_ID or in the Accounts tab.
+DEFAULT_OAUTH_CLIENT_ID = ""
+
 
 class AuthError(RuntimeError):
     """Raised when GitHub authentication or token persistence fails."""
@@ -243,4 +247,7 @@ class CredentialStore:
         if env_id:
             return env_id
         payload = self._read_raw()
-        return str(payload.get("oauth_client_id") or "").strip()
+        saved = str(payload.get("oauth_client_id") or "").strip()
+        if saved:
+            return saved
+        return DEFAULT_OAUTH_CLIENT_ID.strip()

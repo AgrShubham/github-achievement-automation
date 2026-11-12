@@ -55,12 +55,16 @@ jobs:
         run: uv run pyinstaller --clean --noconfirm packaging\app.spec
 
       - name: Authenticode sign executable (optional PFX secrets)
-        if: ${{ secrets.WINDOWS_PFX_BASE64 != '' && secrets.WINDOWS_PFX_PASSWORD != '' }}
         shell: pwsh
         env:
           PFX_B64: ${{ secrets.WINDOWS_PFX_BASE64 }}
           PFX_PASS: ${{ secrets.WINDOWS_PFX_PASSWORD }}
         run: |
+          if (-not $env:PFX_B64 -or -not $env:PFX_PASS) {
+              Write-Host "No code-signing certificate secrets configured; skipping Authenticode signing."
+              "IS_SIGNED=false" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+              exit 0
+          }
           $pfxPath = Join-Path $env:RUNNER_TEMP "codesign.pfx"
           try {
               [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:PFX_B64))
@@ -79,6 +83,7 @@ jobs:
               if ($LASTEXITCODE -ne 0) {
                   throw "signtool verify failed with exit code $LASTEXITCODE"
               }
+              "IS_SIGNED=true" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           } finally {
               Remove-Item $pfxPath -Force -ErrorAction SilentlyContinue
           }
@@ -127,7 +132,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_INPUT: ${{ inputs.tag }}
-          IS_SIGNED: ${{ secrets.WINDOWS_PFX_BASE64 != '' && secrets.WINDOWS_PFX_PASSWORD != '' }}
         run: |
           $tag = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}" } else { $env:TAG_INPUT.Trim() }
           if (-not $tag) { throw "Release tag is required" }
@@ -137,19 +141,20 @@ jobs:
           } else {
               "Binary is currently unsigned; verify the SHA-256 digest and build provenance attestation before launching."
           }
-          $notes = @"
-## GitHub Achievement Studio $tag
-
-Portable Windows 10/11 desktop executable and gitless CLI runner (no local ``git``, ``gh``, or Python required).
-
-### Checksum Verification (PowerShell)
-``````powershell
-Get-FileHash .\GitHubAchievementStudio.exe -Algorithm SHA256
-``````
-Expected SHA-256: ``$sha``
-
-> $signNote
-"@
+          $notesLines = @(
+              "## GitHub Achievement Studio $tag",
+              "",
+              "Portable Windows 10/11 desktop executable and gitless CLI runner (no local ``git``, ``gh``, or Python required).",
+              "",
+              "### Checksum Verification (PowerShell)",
+              '```powershell',
+              "Get-FileHash .\GitHubAchievementStudio.exe -Algorithm SHA256",
+              '```',
+              "Expected SHA-256: ``$sha``",
+              "",
+              "> $signNote"
+          )
+          $notes = $notesLines -join "`n"
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
               gh release upload $tag .\dist\GitHubAchievementStudio.exe .\dist\SHA256SUMS.txt --clobber
@@ -157,4 +162,3 @@ Expected SHA-256: ``$sha``
           } else {
               gh release create $tag .\dist\GitHubAchievementStudio.exe .\dist\SHA256SUMS.txt --title "GitHub Achievement Studio $tag" --notes $notes --generate-notes
           }
-

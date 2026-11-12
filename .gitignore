@@ -3,6 +3,12 @@
 .achievements-state.json
 *.log
 
+# Build & packaging outputs
+build/
+dist/
+.uv-cache/
+*.egg-info/
+
 # Python artifacts
 __pycache__/
 *.py[cod]

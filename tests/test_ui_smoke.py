@@ -54,11 +54,31 @@ def test_main_window_navigation_theme_and_account_wiring(qapp: QApplication, tmp
     assert not win.dashboard_view.refresh_btn.isEnabled()
     assert not win.sandbox_view.inspect_btn.isEnabled()
 
-    # Tab switching
+    # Tab switching + active nav state
+    win.switch_page(MainWindow.PAGE_GUIDE)
+    assert win.stack.currentIndex() == MainWindow.PAGE_GUIDE
+    assert win._nav_buttons[MainWindow.PAGE_GUIDE].property("active") is True
+    assert win._nav_buttons[MainWindow.PAGE_DASHBOARD].property("active") is False
+
     win.switch_page(MainWindow.PAGE_ACCOUNTS)
     assert win.stack.currentIndex() == MainWindow.PAGE_ACCOUNTS
+    assert win._nav_buttons[MainWindow.PAGE_ACCOUNTS].property("active") is True
     win.switch_page(MainWindow.PAGE_RUNNER)
     assert win.stack.currentIndex() == MainWindow.PAGE_RUNNER
+
+    # GuideView navigation CTAs jump directly to target views
+    assert win.guide_view.step1_status_pill.text() == "Not Connected"
+    assert win.guide_view.get_started_btn.text() == "Connect Account"
+    win.guide_view.step1_nav_btn.click()
+    assert win.stack.currentIndex() == MainWindow.PAGE_ACCOUNTS
+    win.guide_view.step2_nav_btn.click()
+    assert win.stack.currentIndex() == MainWindow.PAGE_RUNNER
+    win.guide_view.step3_nav_btn.click()
+    assert win.stack.currentIndex() == MainWindow.PAGE_DASHBOARD
+    win.guide_view.step4_nav_btn.click()
+    assert win.stack.currentIndex() == MainWindow.PAGE_SANDBOX
+    win.guide_view.get_started_btn.click()
+    assert win.stack.currentIndex() == MainWindow.PAGE_ACCOUNTS
 
     # Theme switching persists to StateStore
     assert win.current_theme == "dark"
@@ -80,11 +100,15 @@ def test_main_window_navigation_theme_and_account_wiring(qapp: QApplication, tmp
     assert win.dashboard_view.refresh_btn.isEnabled()
     assert win.sandbox_view.inspect_btn.isEnabled()
     assert not win.runner_view.galaxy_combo.isEnabled()
+    assert win.guide_view.step1_status_pill.text() == "Primary Connected"
+    assert "@alice" in win.guide_view.step1_status_note.text()
+    assert win.guide_view.get_started_btn.text() == "Manage Accounts"
 
     win.login_view.secondary_card.set_session(_session("Alice", 1), persist=False)
     assert not win.login_view.same_account_warn.isHidden()
     assert not win.runner_view.galaxy_combo.isEnabled()
     assert not win.runner_view.cross_owner_chk.isEnabled()
+    assert win.guide_view.step1_status_pill.text() == "Primary Connected"
 
     # Switch secondary to distinct account + enable Cross-Owner Mode
     sec = _session("bob", 2)
@@ -93,6 +117,9 @@ def test_main_window_navigation_theme_and_account_wiring(qapp: QApplication, tmp
     assert win.runner_view.galaxy_combo.isEnabled()
     assert win.runner_view.cross_owner_chk.isEnabled()
     assert win.runner_view.strict_yolo_chk.isEnabled()
+    assert win.guide_view.step1_status_pill.text() == "Dual Connected"
+    assert "@alice" in win.guide_view.step1_status_note.text()
+    assert "@bob" in win.guide_view.step1_status_note.text()
 
     win.runner_view.cross_owner_chk.setChecked(True)
     assert win.runner_view.current_repo_target() == ("bob", "github-achievements-sandbox")
@@ -144,6 +171,13 @@ def test_main_window_navigation_theme_and_account_wiring(qapp: QApplication, tmp
     )
     assert win.runner_view.progress_bar.value() == 100
     assert win.runner_view.stage_lbl.text() == "Done cleanly."
+
+    # Signing out primary resets Guide Step 1 status & Dashboard metrics
+    win.login_view.primary_card.set_session(None, persist=False)
+    assert win.guide_view.step1_status_pill.text() == "Not Connected"
+    assert win.guide_view.get_started_btn.text() == "Connect Account"
+    assert win.dashboard_view.metric_labels["repo_prs"].text() == "—"
+    assert win.dashboard_view.status_banner.isHidden()
 
     win.close()
 
@@ -225,3 +259,40 @@ def test_plan_confirm_dialog_and_runner_form(qapp: QApplication, tmp_path: Path)
     assert "WXYZ-5678" in win.login_view.primary_card.device_status_lbl.text()
 
     win.close()
+
+
+def test_app_startup_landing_page(qapp: QApplication) -> None:
+    from gh_achievement_studio import app as app_mod
+    from gh_achievement_studio.ui.views.dashboard_view import DashboardView
+
+    created_windows: list[MainWindow] = []
+    orig_init = MainWindow.__init__
+
+    def _capture_init(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        created_windows.append(self)
+
+    with (
+        mock.patch.object(MainWindow, "__init__", _capture_init),
+        mock.patch.object(MainWindow, "show"),
+        mock.patch.object(MainWindow, "restore_saved_sessions", return_value=False),
+        mock.patch.object(QApplication, "exec", return_value=0),
+    ):
+        rc = app_mod.main([])
+
+    assert rc == 0
+    assert created_windows[-1].stack.currentIndex() == MainWindow.PAGE_GUIDE
+    created_windows[-1].close()
+
+    with (
+        mock.patch.object(MainWindow, "__init__", _capture_init),
+        mock.patch.object(MainWindow, "show"),
+        mock.patch.object(MainWindow, "restore_saved_sessions", return_value=True),
+        mock.patch.object(DashboardView, "refresh_status"),
+        mock.patch.object(QApplication, "exec", return_value=0),
+    ):
+        rc2 = app_mod.main([])
+
+    assert rc2 == 0
+    assert created_windows[-1].stack.currentIndex() == MainWindow.PAGE_DASHBOARD
+    created_windows[-1].close()

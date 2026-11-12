@@ -24,18 +24,20 @@ from ..core.models import AccountSession
 from ..core.state import StateStore
 from .theme import DARK_QSS, LIGHT_QSS
 from .views.dashboard_view import DashboardView
+from .views.guide_view import GuideView
 from .views.login_view import LoginView
 from .views.runner_view import RunnerView
 from .views.sandbox_view import SandboxView
 
 
 class MainWindow(QMainWindow):
-    """Primary desktop window coordinating Accounts, Dashboard, Runner, and Sandbox views."""
+    """Primary desktop window coordinating Overview, Accounts, Dashboard, Runner, and Sandbox views."""
 
     PAGE_DASHBOARD = 0
     PAGE_RUNNER = 1
     PAGE_ACCOUNTS = 2
     PAGE_SANDBOX = 3
+    PAGE_GUIDE = 4
 
     def __init__(
         self,
@@ -81,8 +83,9 @@ class MainWindow(QMainWindow):
         sb_layout.addWidget(ver_lbl)
         sb_layout.addSpacing(10)
 
-        self._nav_buttons: list[QPushButton] = []
+        self._nav_buttons: dict[int, QPushButton] = {}
         nav_items = (
+            ("Overview && Guide", self.PAGE_GUIDE),
             ("Dashboard", self.PAGE_DASHBOARD),
             ("Automation Runner", self.PAGE_RUNNER),
             ("Accounts", self.PAGE_ACCOUNTS),
@@ -94,7 +97,7 @@ class MainWindow(QMainWindow):
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _checked=False, idx=page_idx: self.switch_page(idx))
             sb_layout.addWidget(btn)
-            self._nav_buttons.append(btn)
+            self._nav_buttons[page_idx] = btn
 
         sb_layout.addStretch(1)
 
@@ -123,11 +126,18 @@ class MainWindow(QMainWindow):
         self.runner_view = RunnerView(self.state_store)
         self.login_view = LoginView(self.cred_store)
         self.sandbox_view = SandboxView(logs_provider=self.runner_view.get_logs_snapshot)
+        self.guide_view = GuideView(
+            page_dashboard=self.PAGE_DASHBOARD,
+            page_runner=self.PAGE_RUNNER,
+            page_accounts=self.PAGE_ACCOUNTS,
+            page_sandbox=self.PAGE_SANDBOX,
+        )
 
         self.stack.addWidget(self.dashboard_view)  # 0
         self.stack.addWidget(self.runner_view)     # 1
         self.stack.addWidget(self.login_view)      # 2
         self.stack.addWidget(self.sandbox_view)    # 3
+        self.stack.addWidget(self.guide_view)      # 4
         root.addWidget(self.stack, 1)
 
         self.setCentralWidget(central)
@@ -142,6 +152,7 @@ class MainWindow(QMainWindow):
         self.login_view.accounts_updated.connect(self._on_accounts_updated)
         self.runner_view.repo_target_changed.connect(self._on_repo_target_changed)
         self.runner_view.run_finished.connect(self._on_run_finished)
+        self.guide_view.navigate_requested.connect(self.switch_page)
 
         self.apply_theme(self._theme, persist=False)
         self.switch_page(self.PAGE_DASHBOARD)
@@ -154,8 +165,8 @@ class MainWindow(QMainWindow):
         if index < 0 or index >= self.stack.count():
             return
         self.stack.setCurrentIndex(index)
-        for idx, btn in enumerate(self._nav_buttons):
-            btn.setProperty("active", idx == index)
+        for page_idx, btn in self._nav_buttons.items():
+            btn.setProperty("active", page_idx == index)
             btn.style().unpolish(btn)
             btn.style().polish(btn)
 
@@ -192,6 +203,7 @@ class MainWindow(QMainWindow):
         owner, repo = self.runner_view.current_repo_target()
         self.dashboard_view.set_context(primary, owner, repo)
         self.sandbox_view.set_context(primary, secondary, owner, repo)
+        self.guide_view.update_account_status(primary, secondary)
         self._update_status_summary(owner, repo)
 
     def _on_repo_target_changed(self, owner: str, repo: str) -> None:

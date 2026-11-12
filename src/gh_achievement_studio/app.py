@@ -85,7 +85,12 @@ def main(argv: list[str] | None = None) -> int:
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
 
-    app = QApplication([sys.argv[0], *raw_args])
+    existing_app = QApplication.instance()
+    app = (
+        existing_app
+        if isinstance(existing_app, QApplication)
+        else QApplication([sys.argv[0], *raw_args])
+    )
     app.setApplicationName("GitHub Achievement Studio")
     app.setOrganizationName("GitHubAchievementStudio")
 
@@ -115,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
         window.switch_page(MainWindow.PAGE_DASHBOARD)
         window.dashboard_view.refresh_status()
     else:
-        window.switch_page(MainWindow.PAGE_ACCOUNTS)
+        window.switch_page(MainWindow.PAGE_GUIDE)
 
     return app.exec()
 

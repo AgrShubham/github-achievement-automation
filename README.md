@@ -11,6 +11,7 @@ See [WINDOWS_APP_PLAN.md](WINDOWS_APP_PLAN.md) for the desktop application archi
 The standalone `dist/GitHubAchievementStudio.exe` binary runs on Windows 10/11 **without** requiring local `git`, `gh` CLI, or Python to be installed.
 
 ### Key Capabilities
+- **Built-In Overview & Quick-Start Guide:** New users land on the interactive **Overview & Guide** panel explaining the gitless architecture, 4-step workflow (with live account connection status and direct tab shortcuts), badge rules, and troubleshooting tips.
 - **Gitless HTTPS Engine:** Creates branches, commits, pull requests, merges, and Q&A Discussions directly via GitHub REST (Git Data API) and GraphQL.
 - **Zero-CLI Authentication:** Supports GitHub **OAuth Device Flow** (browser code), scoped **Personal Access Tokens (PAT)**, and optional `gh` CLI import.
 - **Windows DPAPI Security:** Encrypts saved account tokens per Windows user profile inside `%LOCALAPPDATA%\GitHubAchievementStudio\credentials.json` and redacts tokens from logs and exported diagnostics.
